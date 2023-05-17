@@ -1,0 +1,261 @@
+1. Sales
+-- Question 1: GMV & NMV (Gross Merchandise Value & Net Merchandise Value) theo thời gian (tháng/năm) 
+SELECT
+	FORMAT (order_purchase_timestamp, 'yyyy-MM') AS month,
+	SUM(CASE WHEN order_status = ‘delivered’ THEN payment_value END) NMV,
+	SUM(payment_value) GMV
+FROM payments p
+	JOIN orders o ON o.order_id = p.order_id
+GROUP BY FORMAT (order_purchase_timestamp, 'yyyy-MM')
+ORDER BY FORMAT (order_purchase_timestamp, 'yyyy-MM')
+
+-- Question 2: Tổng số đơn hàng được tạo và Giá trị trung bình của một đơn hàng theo tháng (AOV - Average order value by month)
+SELECT
+FORMAT (o.order_purchase_timestamp, 'yyyy-MM') AS month,
+COUNT(DISTINCT o.order_id) number_of_orders,
+SUM(i.price)/COUNT(DISTINCT o.order_id) avg_order_amount 
+FROM  orders o 
+	JOIN order_items i ON i.order_id = o.order_id
+GROUP BY FORMAT (order_purchase_timestamp, 'yyyy-MM')
+ORDER BY FORMAT (order_purchase_timestamp, 'yyyy-MM')
+
+2. Operations
+-- Question 3: Tổng số sellers đang hợp tác
+SELECT COUNT(DISTINCT seller_id)
+FROM sellers
+
+-- Question 4: Số seller theo state
+SELECT state, COUNT(DISTINCT seller_id)
+FROM sellers
+GROUP BY state
+
+-- Question 5: Số sản phẩm của từng seller
+SELECT seller_id, COUNT(DISTINCT product_id) number_of_products
+FROM order_items
+GROUP BY seller_id
+ORDER BY COUNT(DISTINCT product_id) DESC
+
+-- Question 6: Số đơn hàng và Tổng doanh thu của từng seller (Revenue by sellers)
+SELECT
+i.seller_id,
+COUNT(DISTINCT o.order_id) number_of_orders,
+SUM(i.price) revenue
+FROM orders o JOIN order_items i ON i.order_id = o.order_id
+WHERE order_status in ('invoiced', 'shipped', 'delivered')
+GROUP BY seller_id
+ORDER BY COUNT(DISTINCT o.order_id) DESC
+
+-- Question 7: Tổng số đơn hàng thành công, tổng số đơn hàng được tạo và phần trăm của tổng số đơn hàng hoàn thành trên tổng số đơn hàng (Finished orders per total orders)
+SELECT
+COUNT(DISTINCT order_id) number_of_orders,
+COUNT(CASE WHEN order_status = 'delivered' THEN order_id END) number_of_finished_orders,
+CONCAT(CAST(COUNT(CASE WHEN order_status = 'delivered' THEN order_id END)*100/COUNT(DISTINCT order_id) as float),'%') percentage
+FROM orders
+
+3. Products
+-- Question 8: Sản phẩm bán chạy nhất
+SELECT
+TOP 50 p.product_id,
+COUNT(i.product_id) top_products
+FROM order_items i JOIN products p ON p.product_id = i.product_id
+GROUP BY p.product_id
+ORDER BY COUNT(i.product_id) DESC
+
+-- Question 9: Ngành hàng bán chạy nhất
+SELECT
+p.product_category_name,
+COUNT(i.product_id) top_product_category
+FROM order_items i JOIN products p ON p.product_id = i.product_id
+WHERE p.product_category_name IS NOT NULL
+GROUP BY p.product_category_name
+ORDER BY COUNT(i.product_id) DESC
+
+-- Question 10: Sản phẩm bán chạy nhất của mỗi seller
+WITH data AS (
+	SELECT
+	seller_id, 
+	product_id,
+	COUNT(product_id) top_products,
+	ROW_NUMBER() OVER(PARTITION BY seller_id ORDER BY COUNT(product_id) DESC) n
+	FROM order_items 
+	GROUP BY seller_id, product_id
+	)
+SELECT seller_id, product_id, top_products best_seller
+FROM data
+WHERE n = 1
+
+4. Deliveries
+-- Question 11: Số đơn hàng giao thành công
+SELECT COUNT(*)
+FROM orders
+WHERE order_status = 'delivered'
+
+-- Question 12: Số đơn hàng giao muộn
+WITH data AS (
+	SELECT order_id, DATEDIFF(day, order_estimated_delivery_date, order_delivered_customer_date) late_day
+	FROM orders
+	WHERE order_status IN ('delivered', 'shipped')
+	)
+SELECT COUNT(*) FROM data WHERE late_day > 0
+
+-- Question 13: Tổng số đơn hàng ở từng stage theo tháng (Calculate number of orders in each stage order by month)
+SELECT
+FORMAT (order_purchase_timestamp, 'yyyy-MM') AS month,
+COUNT(DISTINCT order_id) created,
+COUNT(CASE WHEN order_purchase_timestamp IS NOT NULL THEN order_id END) created,
+COUNT(CASE WHEN order_approved_at IS NOT NULL THEN order_id END) approved,
+COUNT(CASE WHEN order_delivered_carrier_date IS NOT NULL THEN order_id END) shipped,
+COUNT(CASE WHEN order_delivered_customer_date IS NOT NULL THEN order_id END) shipped
+FROM orders 
+GROUP BY FORMAT (order_purchase_timestamp, 'yyyy-MM')
+ORDER BY FORMAT (order_purchase_timestamp, 'yyyy-MM')
+
+-- Question 14: Tổng phí vận chuyển
+SELECT
+FORMAT (order_purchase_timestamp, 'yyyy-MM'),
+SUM(freight_value)
+FROM order_items i JOIN orders o ON i.order_id = o.order_id
+WHERE o.order_status IN ('delivered', 'shipped')
+GROUP BY FORMAT (order_purchase_timestamp, 'yyyy-MM')
+ORDER BY FORMAT (order_purchase_timestamp, 'yyyy-MM')
+
+4. CRM
+-- Question 15: RFM
+WITH
+rfm AS (
+SELECT 
+customer_unique_id,
+SUM(payment_value) monetary, 
+MAX(order_purchase_timestamp) recency,
+	CASE
+		WHEN SUM(payment_value) <> 0 THEN
+		DATEDIFF(day, CAST(MAX(order_purchase_timestamp) as date), getdate())/SUM(payment_value)
+		WHEN SUM(payment_value) = 0 THEN '0' 
+		END frequency
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id
+JOIN payments p ON o.order_id = p.order_id
+GROUP BY customer_unique_id
+),
+
+rfm_segmentation AS (
+SELECT
+customer_unique_id, recency, frequency, monetary
+, NTILE(5) OVER (ORDER BY recency) rfm_recency 
+, NTILE(5) OVER (ORDER BY frequency) rfm_frequency
+, NTILE(5) OVER (ORDER BY monetary) rfm_monetary
+, CONCAT(NTILE(5) over (ORDER BY frequency), NTILE(5) OVER (ORDER BY frequency), NTILE(5) OVER (ORDER BY monetary)) rfm
+FROM rfm
+GROUP BY customer_unique_id, recency, frequency, monetary
+)
+
+SELECT
+customer_unique_id, recency, frequency, monetary,
+	CASE
+WHEN rfm in ('555', '554', '544', '545', '454', '455', '445') THEN 'Champion'
+WHEN rfm in ('543', '444', '435', '355', '354', '345', '344', '335') THEN 'Loyal Customers'
+WHEN rfm in ('553', '551', '552', '541', '542', '533', '532', '531', '452', '451', '442', '441', '431', '453', '433', '432', '423', '353', '352', '351', '342', '341', '333', '323') THEN 'Potential Loyalist'
+WHEN rfm in ('512', '511', '422', '421', '412', '411', '311') THEN 'Recent Customers'
+WHEN rfm in ('525', '524', '523', '522', '521', '515', '514', '513', '425', '424', '413', '414', '415', '315', '314', '313') THEN 'Promising'
+WHEN rfm in ('535', '534', '443', '434', '343', '334', '325', '324') THEN 'Customers Needing Attention'
+WHEN rfm in ('331', '321', '312', '221', '213') THEN 'About To Sleep'
+WHEN rfm in ('255', '254', '245', '244', '253', '252', '243', '242', '235', '234', '225', '224', '153', '152', '145', '143', '142', '135', '134', '133', '125', '124') THEN 'At Risk'
+WHEN rfm in ('155', '154', '144', '214', '215', '115', '114', '113') THEN 'Cant Lose Them'
+WHEN rfm in ('332', '322', '231', '241', '251', '233', '232', '223', '222', '132', '123', '122', '212', '211') THEN 'Hibernating'
+WHEN rfm in ('111', '112', '121', '131', '141', '151') THEN 'Lost'
+END segmentation
+FROM rfm_segmentation
+ORDER BY segmentation
+
+-- Question 16: Tần suất mua trung bình (Average Purchase Frequency)
+SELECT
+CAST(COUNT(DISTINCT order_id)/COUNT(DISTINCT customer_unique_id) AS float) APF
+FROM orders o JOIN customers c ON o.customer_id = c.customer_id
+
+-- Question 17: Cohort Analysis Customer retention rate
+WITH
+user_data AS (
+SELECT
+customer_unique_id,
+CAST(DATEADD(month, DATEDIFF(month, 0, order_purchase_timestamp), 0) as date) cohortMonth,
+ROW_NUMBER() OVER(PARTITION BY customer_unique_id ORDER BY order_purchase_timestamp) n
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id
+GROUP BY customer_unique_id, order_purchase_timestamp
+),
+
+user_cohorts AS (
+SELECT DISTINCT customer_unique_id, cohortMonth
+FROM user_data
+WHERE n = 1
+GROUP BY customer_unique_id, cohortMonth
+),
+
+order_month AS (
+SELECT
+DISTINCT c.customer_unique_id,
+DATEDIFF(month, m.cohortMonth, DATEADD(month, DATEDIFF(month, 0, o.order_purchase_timestamp), 0)) month_number,
+m.cohortMonth,
+COUNT(c.customer_unique_id) number_of_repeated_customer
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id
+JOIN user_cohorts m ON m.customer_unique_id = c.customer_unique_id
+JOIN payments p ON o.order_id = p.order_id
+GROUP BY c.customer_unique_id, o.order_purchase_timestamp, m.cohortMonth
+), 
+
+repeated_customer AS (
+SELECT
+customer_unique_id,
+CAST(DATEADD(month, DATEDIFF(month, 0, order_purchase_timestamp), 0) as date) order_purchase_time
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id
+),
+
+cohort_size AS (
+SELECT cohortMonth, COUNT(c.customer_unique_id) number_of_customer
+FROM repeated_customer c
+JOIN user_cohorts m ON c.order_purchase_time = m.cohortMonth
+GROUP BY cohortMonth
+),
+
+retention_table AS (
+SELECT 
+c.cohortMonth,
+o.month_number,
+COUNT(number_of_repeated_customer) number_of_repeated_customer
+FROM order_month o
+LEFT JOIN user_cohorts c ON o.customer_unique_id = c.customer_unique_id
+GROUP BY c.cohortMonth, o.month_number
+)
+
+SELECT  r.cohortMonth
+        , s.number_of_customer
+        , r.month_number
+        , CAST(r.number_of_repeated_customer*100/ s.number_of_customer AS FLOAT) percentage
+FROM retention_table r
+LEFT JOIN cohort_size s ON r.cohortMonth = s.cohortMonth
+WHERE r.cohortMonth IS NOT NULL
+ORDER BY cohortMonth, month_number
+
+-- Question 18: Phân khúc khách hàng theo state
+SELECT state, COUNT(DISTINCT customer_unique_id) number
+FROM customers
+GROUP BY state
+ORDER BY COUNT(DISTINCT customer_unique_id) DESC 
+
+-- Question 19: Net Promoter Score
+SELECT
+FORMAT (order_purchase_timestamp, 'yyyy-MM'),
+CAST(AVG(review_score) AS float) NPS
+FROM reviews r JOIN orders o ON o.order_id = r.order_id
+GROUP BY FORMAT (order_purchase_timestamp, 'yyyy-MM')
+ORDER BY FORMAT (order_purchase_timestamp, 'yyyy-MM')
+
+5. Payments
+-- Question 20: Phương thức thanh toán được sử dụng để thanh toán nhiều nhất
+SELECT
+payment_type, COUNT(payment_type) number
+FROM payments
+GROUP BY payment_type
+ORDER BY COUNT(payment_type) DESC
